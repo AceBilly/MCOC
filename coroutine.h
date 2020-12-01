@@ -7,6 +7,9 @@
 #define READY 0
 #define RUNNING 1
 #define SUSPEND 2
+//是否使用共享栈，1为使用 ，0为独立栈
+static int isuShareStack=0;
+
 
 struct co_cpu_ctx
 {
@@ -23,28 +26,20 @@ struct co_cpu_ctx
 	void *r5;
 };
 
-struct co_ctx{
-    struct co_cpu_ctx *co_cpu_ctx;
-    char *ss_sp;
-    int ss_size;
-};
 struct scheduler
 {
-    //char stack[SHARESTACKSIZE];
     struct co_cpu_ctx* main_ctx;
-    
+    char* share_stack;   
 };
 
 struct coroutine
 {
-    struct co_ctx co_ctx;
+    struct co_cpu_ctx *co_ctx;
     struct scheduler* sche;
     void (*func)(void *data,struct coroutine*co);
     void *data;
     char* stack;
-    char*stack_sp;
     int stack_size;
-    int real_stack_size;
     int status;
     
 };
@@ -52,19 +47,17 @@ struct coroutine
 struct co_ctx_param
 {
 	const void *param1;
-
 };
 
 int co_ctx_make(struct coroutine*co);
 void* co_switch(struct co_cpu_ctx *nw_ctx, struct co_cpu_ctx *cur_ctx);
 void co_resume(struct coroutine* co);
 void co_yield(struct coroutine* co);
-void co_saveStack(struct coroutine *co,char *top);
-struct coroutine *co_create(void (*func)(void *,struct coroutine*), void *data, struct scheduler *sche);
+void co_saveStack(struct coroutine *co);
+struct coroutine *co_create(void (*func)(void *, struct coroutine *), void *data, struct scheduler *sche);
 void co_free(struct coroutine *co);
-void co_restoreStack(struct coroutine *co);
-static int co_main_func(void *arg1);
-struct scheduler* co_scheduler_create();
+static int co_main_func(struct coroutine *co);
+struct scheduler *co_scheduler_create(int isUseShareStack);
 int _switch(struct co_cpu_ctx *new_ctx,struct co_cpu_ctx *cur_ctx);
 
 

@@ -25,10 +25,16 @@ void *co_switch(struct co_cpu_ctx *nw_ctx, struct co_cpu_ctx *cur_ctx)
         "ret                                                \n");
 }
 
-struct scheduler *co_scheduler_create()
+struct scheduler *co_scheduler_create(int isUseShareStack)
 {
+    isuShareStack = isUseShareStack;
     struct scheduler *sche = (struct scheduler *)malloc(sizeof(struct scheduler));
     sche->main_ctx = (struct co_cpu_ctx *)malloc(sizeof(struct co_cpu_ctx));
+    if (isuShareStack == 1)
+    {
+        //使用共享栈
+        sche->share_stack = (char *)malloc(SHARESTACKSIZE);
+    }
     return sche;
 }
 
@@ -39,12 +45,18 @@ struct coroutine *co_create(void (*func)(void *, struct coroutine *), void *data
     co->data = data;
     co->sche = sche;
     co->status = READY;
-    co->stack_size = SHARESTACKSIZE;
-    //co->real_stack_size = COSTACKSIZE;
+    if (isuShareStack == 1)
+    {
+        co->stack_size = COSTACKSIZE;
+    }else
+    {
+        co->stack_size=COSTACKSIZE*100;
+    }
+    
+
     co->stack = (char *)malloc(co->stack_size);
-    co->co_ctx.co_cpu_ctx = (struct co_cpu_ctx *)malloc(sizeof(struct co_cpu_ctx));
-    co->co_ctx.ss_size = co->stack_size;
-    co->co_ctx.ss_sp = co->stack;
+    co->co_ctx = (struct co_cpu_ctx *)malloc(sizeof(struct co_cpu_ctx));
+    co_ctx_make(co);
     return co;
 }
 
@@ -55,7 +67,7 @@ void co_free(struct coroutine *co)
         return;
     }
     free(co->stack);
-    free(co->co_ctx.co_cpu_ctx);
+    free(co->co_ctx);
 }
 
 //初始化coroutine
@@ -75,63 +87,61 @@ int co_ctx_make(struct coroutine *co)
     */
 
     struct co_ctx_param *pa = (struct co_ctx_param *)sp;
-    void **ret_addr = (void **)(sp - sizeof(void *) * 2);
-    *ret_addr = (void *)co->func;
+
     pa->param1 = (void *)co;
 
     //将寄存器信息初始化为0
-    memset(co->co_ctx.co_cpu_ctx, 0, sizeof(struct co_cpu_ctx));
+    memset(co->co_ctx, 0, sizeof(struct co_cpu_ctx));
 
     //保留函数返回地址的空间
     //还原成正常函数调用的栈空间
     //ESP指针sp向下偏移2,因为除了ebp还有一个返回地址(eip)
     //该语句非常重要，一旦esp设置错误将导致参数传递失败
-    co->co_ctx.co_cpu_ctx->esp = (char *)(sp) - sizeof(void *) * 2;
+    co->co_ctx->esp = (char *)(sp) - sizeof(void *) * 2;
 
     //设置协程主函数到eip
-    co->co_ctx.co_cpu_ctx->eip = (void *)co_main_func;
+    co->co_ctx->eip = (void *)co_main_func;
     return 0;
 }
 
 void co_resume(struct coroutine *co)
 {
-    if (co->status == READY)
+    if (isuShareStack == 1)
     {
-        co_ctx_make(co);
+        memcpy(co->sche->share_stack + SHARESTACKSIZE - co->stack_size, co->stack, co->stack_size);
+        if (co->status == READY)
+        {
+            co->co_ctx->esp = (char *)co->sche->share_stack + SHARESTACKSIZE - co->stack_size + ((char *)co->co_ctx->esp - co->stack);
+        }
+        else
+        {
+            co->co_ctx->esp = co->stack;
+            co->co_ctx->esp = (char *)co->sche->share_stack + SHARESTACKSIZE - co->stack_size + ((char *)co->co_ctx->esp - co->stack);
+        }
     }
-    //co_restoreStack(co);
-    void *temp = co_switch(co->co_ctx.co_cpu_ctx, co->sche->main_ctx);
-
-    printf("resume=%p\n", temp);
+    co->status = RUNNING;
+    co_switch(co->co_ctx, co->sche->main_ctx);
 }
 
 void co_yield(struct coroutine *co)
 {
-    //co_saveStack(co, co->sche->stack + SHARESTACKSIZE);
-    co_switch(co->sche->main_ctx, co->co_ctx.co_cpu_ctx);
-}
-
-void co_saveStack(struct coroutine *co, char *top)
-{
-
-    //int len=co->sche->stack+SHARESTACKSIZE-co->stack_sp;
-    free(co->stack);
-    //将(dummy->top) 的数据copy到该协程对应的结构中就行了
-}
-
-void co_restoreStack(struct coroutine *co)
-{
-    // memcpy(co->sche->stack + SHARESTACKSIZE - co->stack_size, co->stack, co->stack_size);
-}
-
-static int co_main_func(void *arg1)
-{
-    struct coroutine *co = (struct coroutine *)arg1;
-    for (;;)
+    if (isuShareStack == 1)
     {
-        co->status = RUNNING;
-        co->func(co->data, co);
-        co->status = SUSPEND;
-        co_yield(co);
+        co_saveStack(co);
     }
+    co_switch(co->sche->main_ctx, co->co_ctx);
+}
+
+void co_saveStack(struct coroutine *co)
+{
+    char a;
+    co->stack_size = co->sche->share_stack + SHARESTACKSIZE - &a;
+    free(co->stack);
+    co->stack = (char *)malloc(co->stack_size);
+    memcpy(co->stack, &a, co->stack_size);
+}
+
+static int co_main_func(struct coroutine *co)
+{
+    co->func(co->data, co);
 }
